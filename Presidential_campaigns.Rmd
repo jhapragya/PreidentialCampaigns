@@ -1,0 +1,698 @@
+---
+title: "Presidential campaigns"
+author: "Pragya Jha"
+date: "December 16, 2017"
+output:
+word_document: default
+
+---
+
+#Introduction
+
+This is an exploration of 2016 US presidential campaign donations in the state of Texas. For this exploration data analysis, I am researching the 2016 presidential campaign finance data from Federal Election Commission. The dataset contains financial contribution transaction till 2016.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r}
+setwd("C:/Users/Pragya/Documents")
+ptx <- read.csv('P00000001-TX.csv', header = TRUE)
+dim(ptx)
+str(ptx)
+```
+
+
+This dataset contains 548396 contributions and 18 variables. To start, I want to have a glance how the contribution distributed.
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+p1 <- ggplot(aes(x = contb_receipt_amt), data = ptx) +
+  geom_histogram(bins = 50)
+p2 <- ggplot(aes(x = 1, y = contb_receipt_amt), data = ptx) +
+  geom_boxplot()
+
+grid.arrange(p1, p2, ncol = 2)
+
+
+
+```
+
+
+I realized that there were so many outliers(extreme high and extreme low values), it was impossible to see details. And there were negative contributions too.
+
+
+```{r}
+ggplot(aes(x = contb_receipt_amt), data = ptx) +
+  geom_histogram(binwidth = 0.05) + 
+  scale_x_log10() +
+  ggtitle('Histogram of the Contribution')
+
+tail(sort(table(ptx$contb_receipt_amt)), 5)
+summary(ptx$contb_receipt_amt)
+```
+
+
+Transforming to log10 to better understand the distribution of the contribution. The distribution looks normal and the data illustrated that most donors made small amount of contributions.
+
+
+To perform in depth analysis, I decided to omit the negative contributions which I believe they were refund and contributions that exceed $2700 limit, because it breaks Federal Election Campaign Act and will be refunded. This means 5897 contributions are omitted.
+
+
+```{r}
+sum(ptx$contb_receipt_amt >= 2700)
+sum(ptx$contb_receipt_amt < 0)
+```
+
+
+I will need to add more variables such as candidate party affiliate, donors' gender and donors' zipcodes.
+
+
+```{r}
+# create party variables
+democrat <- c("Clinton, Hillary Rodham", "Sanders, Bernard", "O'Malley, Martin Joseph", "Lessig, Lawrence", "Webb, James Henry Jr.")
+
+ptx$party <- ifelse(ptx$cand_nm %in% democrat, "democrat", "republican")
+
+ptx$party[ptx$cand_nm %in% c("Johnson, Gary", "McMullin, Evan", "Stein, Jill")] <- 'others'
+
+# Get contributor's firs name for gender predication
+ptx$contbr_first_nm <- sub(" .*", "", sub(".*, ", "", ptx$contbr_nm))
+
+# Omit negative contributions and contributions >=2700
+ptx <- ptx[ptx$contb_receipt_amt > 0 & ptx$contb_receipt_amt <= 2700, ]
+
+# Adjust date
+ptx$contb_receipt_dt <- as.Date(ptx$contb_receipt_dt,format = "%d-%b-%y")
+
+# Create gender dataframe
+library(gender)
+gender_df <- gender(ptx$contbr_first_nm, method = 'ssa', c(1920, 1997),
+                    countries = 'United States')
+
+# create gender variable
+library(dplyr)
+gender_df <- unique(gender_df)
+names(gender_df)[1] <- 'contbr_first_nm'
+ptx <- inner_join(ptx, gender_df, by = 'contbr_first_nm')
+
+
+# remove columns I do not need
+drops <- c('proportion_male', 'proportion_female', 'year_min', 'year_max')
+ptx <- ptx[ , !(names(ptx) %in% drops)]
+
+# Add missing leading zero on zipcode and clean up zipcode
+ptx$zip <- paste0("0", ptx$contbr_zip)
+ptx$zip <- substr(ptx$zip, 1, 5)
+library(zipcode)
+data(zipcode)
+ptx <- left_join(ptx, zipcode, by = 'zip')
+
+```
+
+
+The additional variables are:
+
+-party: candidates party affilliation.
+-contbr_first_nm: contributor's first name will be used to predict gender.
+-gender: contributor's gender.
+-Latitude: Donor's latitude for map creation.
+-Longitute: Donor's longitude for map creation.
+
+After adding the variables, I wonder what the contribution distribution looks like across the parties, candidates, genders and occupations.
+
+
+```{r}
+# Create party dataframe and bar plots for party
+
+party_group <- group_by(ptx, party)
+
+ptx.contr_by_party <- summarize(party_group,
+                                sum_party = sum(contb_receipt_amt),
+                                number_of_candidate = length(unique(cand_id)), 
+                                mean_party = sum_party/number_of_candidate, 
+                                n = n()) 
+
+ptx.contr_by_party
+
+ptx.contr_by_party$party <- ordered(ptx.contr_by_party$party, 
+                                    levels = c('democrat', 'republican', 'others'))
+
+ggplot(aes(x = party, y = n, fill = party), data = ptx.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = n),
+            data = ptx.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Number of Contributions') +
+  ggtitle('Total Number of Contributions by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+sum(ptx.contr_by_party$n)
+
+```
+
+
+Until November, 2016, total number of donations made to the presidential election near 515K, and the Democratic party took more than 250K.
+
+
+```{r}
+table(ptx$cand_nm)
+
+ggplot(aes(x = cand_nm), data = ptx) + geom_bar() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Number of Contributions') +
+  ggtitle('Number of Contributions by Candidate')
+
+```
+
+
+There were total 25 candidates, Hillary Clinton was the leader in the number of contributions, followed by Rafael Edward, then Bernard Sanders and then Donald Trump.
+
+
+```{r}
+
+gender_group <- group_by(ptx, gender)
+ptx.contr_by_gen <- summarize(gender_group, 
+                              sum_gen = sum(contb_receipt_amt),
+                              n_gen = n())
+ptx.contr_by_gen
+
+ggplot(aes(x = gender, y = n_gen, fill = gender), 
+       data = ptx.contr_by_gen)+
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = n_gen), stat = 'identity', data = ptx.contr_by_gen, vjust = -0.4) +
+  
+  xlab('Gender') +
+  ylab('Number of Contributions') +
+  ggtitle('Number of Contributions by Gender')
+```
+
+
+Who are those donors?
+
+
+```{r}
+# Create occupation datadrame and occupation plots
+occupation_group <- group_by(ptx, contbr_occupation)
+ptx.contr_by_occu <- summarize(occupation_group, 
+                               sum_occu = sum(contb_receipt_amt), 
+                               mean_occu = mean(contb_receipt_amt), 
+                               n = n())
+
+
+
+ptx.contr_by_occu <- subset(ptx.contr_by_occu, contbr_occupation != "INFORMATION REQUESTED")
+
+ptx.contr_by_occu <- subset(ptx.contr_by_occu, contbr_occupation != "INFORMATION REQUESTED PER BEST EFFORTS")
+
+ptx.contr_by_occu <- head(arrange(ptx.contr_by_occu,desc(n)), n = 10)
+ptx.contr_by_occu
+
+ptx.contr_by_occu$contbr_occupation <- ordered(ptx.contr_by_occu$contbr_occupation, levels = c('RETIRED', 'NOT EMPLOYED', 'ATTORNEY', 'HOMEMAKER', 'ENGINEER', 'PHYSICIAN', 'TEACHER', 'SALES', 'CONSULTANT', 'PROFESSOR'))
+
+ptx.contr_by_occu
+
+ggplot(aes(x = contbr_occupation, y = n), data = ptx.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  xlab('Top 10 Occupations') +
+  ylab('Number of Donors') +
+  ggtitle('Top 10 Occupations by Number of Donors') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+When we count the number of donors, retired people take the first place, followed by not employed people, attorney comes to the third, consultant and professor are among the least in terms of number of contributions.
+
+
+```{r}
+summary(ptx$contb_receipt_dt)
+
+ggplot(aes(x = contb_receipt_dt), data = ptx) + geom_histogram(binwidth = 30, position = position_dodge()) +
+  xlab('Date') +
+  ylab('Number of Contributions') +
+  ggtitle('Histogram of Contribution Date')
+```
+
+#Univariate Analysis
+##What is the structure of your dataset?
+
+There are 517647 contributions and 18 variables. The variables that interest to me and I will be using are:
+
+-cand_nm: Candidate Name
+-contbr_zip: Contributor Zipcode
+-contbr_nm: Contributor name (first name in particular)
+-contbr_occupation: Contributor Occupation
+-contb_receipt_amt: Contribution Amount
+-contb_receipt_dt: Contribution date
+Other observations:
+
+Most people contribute small amount of money.
+
+The democratic party receive the most number of donations.
+Hillary Clinton have the most supporters.
+
+Retired people make the most number of contributions.
+
+##What is(are) the main features of interest in your dataset?
+
+The main features in the dataset are party, candidate and contribution amount. I'd like to find the answers to my questions at the beginning of this report. I'd also like to try to use combination of variables to build a logistics regression model to predictive a donor's contribution party.
+
+##What other features in the dataset do you think will help support your investigation into your feature(s) of interest?
+
+Gender, occupation, time of the contribution, location are likely contribute to the contribution amount and contribution party. I think occupation probably contributes most to the average contribution amount, and gender probably contributes most to the contribution party.
+
+##Did you create any new variables from existing variables in the dataset?
+
+I created 5 variables:
+
+-party: candidates party affilliation.
+-contbr_first_nm: contributor's first name will be used to predict gender.
+-gender: contributor's gender.
+-Latitude: Donor's latitude for map creation.
+-Longitute: Donor's longitude for map creation.
+
+Of the features you investigated, were there any unusual distributions? Did you perform any operations on the data to tidy, adjust, or change the form of the data? If so, why did you do this?
+
+I omitted negative contributions because I believe they were refund, and I omitted contributions that exceed $2700 because because it breaks Federal Election Campaign Act and will be refunded.
+
+
+
+#Bivariate plots
+
+
+```{r}
+# barplot for contribution amount
+ptx.contr_by_party
+
+ggplot(aes(x = party, y = sum_party/1000, fill = party), data = ptx.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_party/1000)),
+            data = ptx.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Contribution Received (Thousands)') +
+  ggtitle('Total Contribution Amount by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+
+
+ggplot(aes(x = party, y = mean_party/1000, fill = party), data = ptx.contr_by_party) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(mean_party/1000)), 
+            data = ptx.contr_by_party, vjust = -0.4) +
+  xlab('Party') +
+  ylab('Contribution Received (Thousands)') +
+  ggtitle('Average Contribution Received by Party') +
+  scale_fill_manual(values = c('blue', 'red', 'gold'))
+
+sort(by(ptx$contb_receipt_amt, ptx$cand_nm, sum))
+
+ggplot(aes(x = cand_nm, y = contb_receipt_amt/1000), data = ptx) + 
+  geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Contribution Amount by Candidate')
+
+sum(ptx$contb_receipt_amt)
+
+
+```
+
+
+
+
+To see contribution patterns between parties and candidates, I start with boxplots.
+
+
+```{r}
+ggplot(aes(x = party, y = contb_receipt_amt, fill = party), data = ptx) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 2700)) +
+  xlab('party') +
+  ylab('Contribution Amount') +
+  ggtitle('Boxplot for Contribution Amount by Party') +
+  scale_fill_manual(values = c('blue','gold','red'))
+```
+
+
+
+However, it is very hard to compare contributions among all parties at a glance because there are so many outliers. I will apply log scale and remove the 'others' party from now on because my analysis is focused on the Democratic party and the Republican party.
+
+
+
+```{r}
+ptx <- subset(ptx, ptx$cand_nm != "McMullin, Evan" & ptx$cand_nm != "Johnson, Gary" & ptx$cand_nm != "Stein, Jill")
+
+by(ptx$contb_receipt_amt, ptx$party, summary)
+
+ggplot(aes(x = party, y = contb_receipt_amt, fill = party), data = ptx) +
+  geom_boxplot() +
+  scale_y_log10() +
+  xlab('party') +
+  ylab('Contribution Amount') +
+  ggtitle('Boxplot for Contribution Amount(Log_10) by Party') +
+  scale_fill_manual(values = c('blue', 'red'))
+
+```
+
+
+
+Now it is much better. Although the Republican has the higher median and mean, the Democrat has more variations and the distribution is more spread out. This indicates that the Democrat has more big and small donors.
+
+
+```{r}
+by(ptx$contb_receipt_amt, ptx$cand_nm, summary)
+
+ggplot(aes(x = cand_nm, y = contb_receipt_amt), data = ptx) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('candidate') +
+  ylab('Contribution Amount') +
+  ggtitle('Contribution Amount by Candidate')
+```
+
+
+##Now let's examine within parties
+
+
+```{r}
+# Create candidate dataframe and bar plots for candidate 
+can_group <- group_by(ptx, party, cand_nm)
+ptx.contr_by_can <- summarize(can_group, 
+                              sum_can = sum(contb_receipt_amt), 
+                              mean_can = mean(contb_receipt_amt),
+                              n = n())
+ptx.contr_by_can <- arrange(ptx.contr_by_can, sum_can)
+
+ptx.contr_by_can
+
+ggplot(aes(x = cand_nm, y = sum_can/1000), data = ptx.contr_by_can) +
+  geom_bar(aes(fill = party), stat = 'identity') +
+  scale_y_continuous(limits = c(0, 23000)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Candidate') +
+  ylab('Contribution Received (Thousands)') +
+  ggtitle('Contribution Received by Candidate') +
+  scale_fill_manual(values = c("blue", "red"))
+
+# Create candidate_party dataframe
+can_party <- left_join(ptx.contr_by_can, ptx.contr_by_party, by = 'party')
+
+ggplot(aes(x = cand_nm, y = sum_can/sum_party*100), data = can_party) +
+  geom_bar(aes(fill = party), stat = 'identity') +
+  geom_text(stat='identity', aes(label = paste(round(100*sum_can/sum_party,0),'%')), 
+            size=3, data = can_party, vjust = -0.4)+
+  scale_y_continuous(limits = c(0, 100)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Candidate') +
+  ylab('Percentage of Donation') +
+  ggtitle('Percentage of Contribution Received by Candidate from their Own Party') +
+  scale_fill_manual(values = c("blue", 'red'))
+
+
+```
+
+
+Within each party, majority of the donations were received by only few candidates. For Democratic party, Hillary Clinton and Bernard Sanders take almost 100% of all donations to the Democratic party, and of which, 86% went to Hillary Clinton. For the Republican party, Rafael Edward led the way taking 39% of all donations to the Republican party. Rafael Edward, Donald Trump, Marco Rubio, Ted Cruz all together taking 86% of all donations to the Republican party, the remaining 14% were shared by the other Republican candidates.
+
+From the above charts, we are able to see who were the top candidates in each party in Massachusetts. I will examine the following candidates who received at least 8% of total donations in their party in details later.
+
+
+```{r}
+top_candidate <- c("Clinton, Hillary Rodham", "Sanders, Bernard", "Trump, Donald J.", "Rubio, Marco", "Cruz, Rafael Edward 'Ted'")
+
+top_candidate
+```
+
+
+
+```{r}
+ggplot(aes(x = gender, y = contb_receipt_amt, fill = gender), data = ptx) +
+  geom_boxplot() +
+  xlab('gender') +
+  ylab('Contribution Amount') +
+  ggtitle('Contribution Amount by Gender Boxplot') +
+  coord_cartesian(ylim = c(0, 100))
+
+by(ptx$contb_receipt_amt, ptx$gender, summary)
+
+```
+```{r}
+# Create gender dataframe
+gender_group <- group_by(ptx, gender)
+ptx.contr_by_gen <- summarize(gender_group, 
+                              sum_gen = sum(contb_receipt_amt),
+                              n = n())
+ptx.contr_by_gen
+
+ggplot(aes(x = gender, y = sum_gen/1000, fill = gender), 
+       data = ptx.contr_by_gen) +
+  geom_bar(stat = 'identity') +
+  geom_text(aes(label = sum_gen/1000), stat = 'identity', data = ptx.contr_by_gen, vjust = -0.4) +
+  xlab('Gender') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Contribution Amount by Gender')
+```
+```{r}
+# Create gender_to_top_candidate dataframe for bar plot
+ptx.gen_to_top_candidate <- ptx %>%
+  filter(ptx$cand_nm %in% top_candidate) %>%
+  group_by(cand_nm, gender) %>%
+  summarize(sum_gen_can = sum(contb_receipt_amt))
+
+ptx.gen_to_top_candidate
+
+ggplot(aes(x = cand_nm, y = sum_gen_can/1000, fill = gender), 
+       data = ptx.gen_to_top_candidate) +
+  geom_bar(stat = 'identity', position = position_dodge(width = 1)) +
+  xlab('Candidate') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Contribution Amount to Top Candidate by Gender') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+## How about total contribution amount and average contribution amount cross top 10 occupations?
+
+
+
+```{r}
+ptx.contr_by_occu
+
+ggplot(aes(x = contbr_occupation, y = sum_occu/1000), data = ptx.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_occu/1000)),data = ptx.contr_by_occu, vjust = -0.4) + xlab('Top 10 Occupations') +
+  ylab('Total Contribution Amount (Thousands)') +
+  ggtitle('Total Contribution Amount From Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(aes(x = contbr_occupation, y = round(mean_occu,2)), data = ptx.contr_by_occu) + 
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(mean_occu,2)), data = ptx.contr_by_occu, vjust = -0.4) +
+  xlab('Top 10 Occupations') +
+  ylab('Average Contribution Amount') +
+  ggtitle('Average Contributions From the Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+```{r}
+# Create top_occupation datafram 
+top_occu_df <- filter(ptx, contbr_occupation %in% ptx.contr_by_occu[['contbr_occupation']])
+
+ggplot(aes(x = contbr_occupation, y = contb_receipt_amt), data = top_occu_df) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Top 10 Occupations') +
+  ylab('Donations Amount') +
+  ggtitle('Donations Made by Top 10 Occupations')
+```
+
+
+
+```{r}
+
+ggplot(aes(x = contbr_occupation, y = contb_receipt_amt), data = top_occu_df) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_cartesian(ylim = c(0, 200)) +
+  xlab('Top 10 Occupations') +
+  ylab('Donations Amount') +
+  ggtitle('Donations Made by Top 10 Occupations Excl. Outliers')
+```
+
+
+
+```{r}
+ptx.top_candidate <- ptx %>%
+  filter(cand_nm %in% top_candidate) %>%
+  group_by(cand_nm, contb_receipt_dt) %>%
+  summarize(n = n(), total = sum(contb_receipt_amt))
+
+ggplot(aes(x = contb_receipt_dt, y = total/1000, color = cand_nm), data = ptx.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Contribution Amount (Thousands)') +
+  ggtitle('Time Series of Contribution Amount by Candidate')
+
+ggplot(aes(x = contb_receipt_dt, y = n, color = cand_nm), data = ptx.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Number of Contributions') +
+  ggtitle('Time Series of Number of Contributions by Candidate')
+
+```
+```{r}
+ggplot(aes(x = contb_receipt_dt, y = total, color = cand_nm), data = ptx.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  xlab('Date') +
+  ylab('Contribution Amount') +
+  ggtitle('Time Series of Contribution Amount(Log_10) by Candidate') +
+  facet_wrap(~ cand_nm) +
+  scale_y_log10() +
+  theme(axis.text.x = element_text(angle = 70, hjust = 1))
+```
+
+
+#Final Plots and Summaries
+
+
+Most donations went to a few candidates. In Texas financial donations to the presidential campaign were distributed unevenly. Especially in Democrat, 86% of the donations for Democrat went to Hillary Clinton. "In the 2016 presidential election, it would appear, the question is not whether Democrats can turn Texas blue; it is whether Donald Trump will do so. ... Polling has found him underperforming in a number of red states, and it is natural that Texas should be among them."  
+
+
+
+```{r}
+
+
+can_party$cand_nm <-
+  ordered(
+    can_party$cand_nm,
+    levels = c(
+      "Clinton, Hillary Rodham",
+      "Sanders, Bernard" ,
+      "O'Malley, Martin Joseph",
+      "Lessig, Lawrence",
+      "Trump, Donald J.",
+      "Rubio, Marco",
+      "Cruz, Rafael Edward 'Ted'",
+      "Kasich, John R.",
+      "Bush, Jeb",
+      "Carson, Benjamin S.",
+      "Christie, Christopher J.",
+      "Graham, Lindsey O.",
+      "Fiorina, Carly",
+      "Paul, Rand",
+      "Walker, Scott",
+      "Huckabee, Mike",
+      "Santorum, Richard J.",
+      "Pataki, George E.",
+      "Gilmore, James S III",
+      "Perry, James R. (Rick)",
+      "Jindal, Bobby",
+      "Webb, James Henry Jr."
+    )
+  )
+
+ggplot(aes(x = cand_nm, y = sum_can/sum_party*100), data = can_party) +
+  geom_bar(aes(fill = party), stat = 'identity') +
+  geom_text(stat='identity', aes(label = paste(round(100*sum_can/sum_party,0),'%')), 
+            size=3, data = can_party, vjust = -0.4)+
+  scale_y_continuous(limits = c(0, 100)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab('Candidate') +
+  ylab('Percentage of Donation') +
+  ggtitle('Percentage of Contribution Received by Candidate from their Own Party') +
+  scale_fill_manual(values = c("blue", 'red'))
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+##Time Series of Top Candidates
+
+
+```{r}
+p1 <- ggplot(aes(x = contb_receipt_dt, y = total, color = cand_nm), 
+             data = ptx.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  scale_y_log10() +
+  xlab('Date') +
+  ylab('Contribution Amount in dollars of log10') +
+  ggtitle('Time Series of Contribution Amount(Log_10) by Candidate')
+
+p2 <- ggplot(aes(x = contb_receipt_dt, y = n, color = cand_nm), 
+             data = ptx.top_candidate) +
+  geom_jitter(alpha = 0.05) +
+  geom_smooth(method = 'loess') +
+  scale_y_log10() +
+  xlab('Date') +
+  ylab('Number of Contributions') +
+  ggtitle('Time Series of Number of Contributions(Log_10) by Candidate')
+
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+
+Hillary Clinton dominated the contribution amount and number of contributions donors.From the plots, it looks like Bernard Sanders and Donald Trump drastically reduced the contribution towards the end of elections and Hillary Clinton continued to contribute.
+
+```{r}
+ptx.contr_by_occu$contbr_occupation <- ordered(ptx.contr_by_occu$contbr_occupation, levels = c('RETIRED',  'ATTORNEY', 'HOMEMAKER', 'PHYSICIAN','ENGINEER', 'NOT EMPLOYED' , 'CONSULTANT','SALES', 'PROFESSOR','TEACHER'))
+
+ggplot(aes(x = contbr_occupation, y = sum_occu/1000), data = ptx.contr_by_occu) +
+  geom_bar(stat = 'identity') +
+  geom_text(stat = 'identity', aes(label = round(sum_occu/1000)),data = ptx.contr_by_occu, vjust = -0.4) + xlab('Top 10 Occupations') +
+  ylab('Total Contribution Amount (Thousands)') +
+  ggtitle('Total Contribution Amount From Top 10 Occupations') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+The top occupation that most generously contributed was 'retired'. The total contribution across occupations differed substantially.
+
+Tecahers and Professors contributed very less (surpising was that they contributed lesser than "not employed")
+
+#Reflection
+
+#Challenges
+The original dataset did not contain gender information, to analyze the relationship between gender and donations, I added gender column using R's gender package which used to predict gender from donor's first name.
+It was a challenge to learn and do R in general especially the ggplots as sometimes when proper fomatting is not done, nothing appears on the graphs.
+
+The ggplot2 and dplyr packages are the most important packages for this project. 
+
+# Issues
+
+Gender information was not there.
+Latitude and Longitude had to be added.
+
+
+#Conclusion
+By analyzing Texas financial donation data, I found several interesting characteristics:
+
+It is no doubt that Texas is one of the red states although it was not much apparent in 2016 elections. Few candidates collected the most donations.
+We need to have the right political knowledge to know the exact situation. This analysis might prove out to be useful fo those who are abreast with the current political knowledge. 
+Also, contribution is just one factor, there might be several other factors which influenced the elections.
